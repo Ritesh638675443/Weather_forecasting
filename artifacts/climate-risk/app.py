@@ -1,10 +1,10 @@
-"""Climate & Catastrophe Risk Dashboard — Streamlit main app."""
+"""Climate Intelligence Dashboard — Streamlit main app."""
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import date, timedelta
+from datetime import date
 
 from utils.geocoder import get_coordinates, reverse_geocode
 from utils.nasa_power import get_climate_data, process_climate_data, generate_climate_features
@@ -27,6 +27,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ── Session state initialisation ───────────────────────────────────────────────
+if "analysed" not in st.session_state:
+    st.session_state.analysed = False
+if "results" not in st.session_state:
+    st.session_state.results = {}
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -60,10 +66,16 @@ with st.sidebar:
         help="Used to filter the EM-DAT disaster database",
     )
 
-    analyse = st.button("⚡ Analyse Location", use_container_width=True, type="primary")
+    analyse_clicked = st.button("⚡ Analyse Location", use_container_width=True, type="primary")
+
+    if st.session_state.analysed:
+        if st.button("🔄 New Analysis", use_container_width=True):
+            st.session_state.analysed = False
+            st.session_state.results = {}
+            st.rerun()
 
 # ── Welcome screen ─────────────────────────────────────────────────────────────
-if not analyse:
+if not st.session_state.analysed and not analyse_clicked:
     st.title("🌍 Climate Intelligence Dashboard")
     st.markdown(
         """
@@ -84,7 +96,6 @@ if not analyse:
         👈 **Enter a location in the sidebar and click Analyse.**
         """
     )
-
     st.info(
         "💡 **Tip:** IBTrACS (`data/ibtracs.csv`), flood events (`data/flood_events.csv`), "
         "and EM-DAT (`data/emdat.csv`) datasets are read from local files. "
@@ -93,86 +104,131 @@ if not analyse:
     )
     st.stop()
 
-# ── Resolve location ──────────────────────────────────────────────────────────
-with st.spinner("Resolving location…"):
-    if input_mode == "Search by name" and location_query:
-        geo = get_coordinates(location_query)
-        if not geo:
-            st.error(f"Could not geocode **{location_query}**. Try a more specific name.")
+# ── Run analysis (only when button clicked, then cache in session_state) ───────
+if analyse_clicked:
+    # Resolve location
+    with st.spinner("Resolving location…"):
+        if input_mode == "Search by name" and location_query:
+            geo = get_coordinates(location_query)
+            if not geo:
+                st.error(f"Could not geocode **{location_query}**. Try a more specific name.")
+                st.stop()
+            lat, lon = geo["lat"], geo["lon"]
+            display_name = geo["display_name"]
+        elif input_mode == "Enter coordinates" and lat_input is not None:
+            lat, lon = lat_input, lon_input
+            display_name = reverse_geocode(lat, lon)
+        else:
+            st.warning("Please enter a location.")
             st.stop()
-        lat, lon = geo["lat"], geo["lon"]
-        display_name = geo["display_name"]
-    elif input_mode == "Enter coordinates" and lat_input is not None:
-        lat, lon = lat_input, lon_input
-        display_name = reverse_geocode(lat, lon)
-    else:
-        st.warning("Please enter a location.")
-        st.stop()
 
+    progress = st.progress(0, text="Fetching current weather…")
+
+    with st.spinner("Loading data — this may take up to 30 seconds on first run…"):
+        try:
+            weather = get_current_weather(lat, lon)
+        except Exception as e:
+            weather = {}
+            st.warning(f"Open-Meteo unavailable: {e}")
+        progress.progress(15, "Fetching forecast…")
+
+        try:
+            forecast_raw = get_forecast(lat, lon)
+        except Exception:
+            forecast_raw = {}
+        progress.progress(25, "Fetching NASA POWER climate history…")
+
+        climate_features = {}
+        climate_df = pd.DataFrame()
+        try:
+            nasa_resp = get_climate_data(lat, lon, str(start_date), str(end_date))
+            climate_df = process_climate_data(nasa_resp)
+            climate_features = generate_climate_features(climate_df)
+        except Exception as e:
+            st.warning(f"NASA POWER data unavailable: {e}")
+        progress.progress(50, "Fetching elevation…")
+
+        elevation_m = get_elevation(lat, lon)
+        elev_risk = elevation_to_flood_risk(elevation_m)
+        progress.progress(60, "Calculating cyclone exposure…")
+
+        cyclone_data = calculate_cyclone_exposure(lat, lon)
+        progress.progress(70, "Calculating flood frequency…")
+
+        flood_freq = calculate_flood_frequency(lat, lon)
+        flood_events = get_flood_events(lat, lon)
+        progress.progress(80, "Loading EM-DAT disaster data…")
+
+        catastro = calculate_catastrophe_exposure(country_filter or None)
+        progress.progress(90, "Computing risk scores…")
+
+        heavy_rain = climate_features.get("heavy_rain_days", 0)
+        heatwave_days = climate_features.get("heatwave_days", 0)
+        dry_days = climate_features.get("max_consecutive_dry_days", 0)
+
+        flood_score = calculate_flood_risk(heavy_rain, flood_freq, elev_risk)
+        cyclone_score = cyclone_data["cyclone_score"]
+        heat_score = calculate_heat_score(heatwave_days)
+        drought_score = calculate_drought_score(dry_days)
+        overall_score = calculate_climate_risk(flood_score, cyclone_score, heat_score, drought_score)
+
+        progress.progress(100, "Done!")
+        progress.empty()
+
+    # ── Persist everything in session state ────────────────────────────────────
+    st.session_state.results = {
+        "lat": lat,
+        "lon": lon,
+        "display_name": display_name,
+        "start_date": start_date,
+        "end_date": end_date,
+        "weather": weather,
+        "forecast_raw": forecast_raw,
+        "climate_df": climate_df,
+        "climate_features": climate_features,
+        "elevation_m": elevation_m,
+        "elev_risk": elev_risk,
+        "cyclone_data": cyclone_data,
+        "flood_freq": flood_freq,
+        "flood_events": flood_events,
+        "catastro": catastro,
+        "flood_score": flood_score,
+        "cyclone_score": cyclone_score,
+        "heat_score": heat_score,
+        "drought_score": drought_score,
+        "overall_score": overall_score,
+    }
+    st.session_state.analysed = True
+
+# ── Read results from session state ───────────────────────────────────────────
+r = st.session_state.results
+lat = r["lat"]
+lon = r["lon"]
+display_name = r["display_name"]
+start_date = r["start_date"]
+end_date = r["end_date"]
+weather = r["weather"]
+forecast_raw = r["forecast_raw"]
+climate_df = r["climate_df"]
+climate_features = r["climate_features"]
+elevation_m = r["elevation_m"]
+elev_risk = r["elev_risk"]
+cyclone_data = r["cyclone_data"]
+flood_freq = r["flood_freq"]
+flood_events = r["flood_events"]
+catastro = r["catastro"]
+flood_score = r["flood_score"]
+cyclone_score = r["cyclone_score"]
+heat_score = r["heat_score"]
+drought_score = r["drought_score"]
+overall_score = r["overall_score"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Header
+# ══════════════════════════════════════════════════════════════════════════════
 st.title(f"🌍 {display_name}")
 st.caption(f"Coordinates: {lat:.4f}°N, {lon:.4f}°E  |  Analysis period: {start_date} → {end_date}")
 st.divider()
-
-# ── Fetch all data ─────────────────────────────────────────────────────────────
-progress = st.progress(0, text="Fetching current weather…")
-
-with st.spinner("Loading data — this may take up to 30 seconds on first run…"):
-    # 1. Current weather
-    try:
-        weather = get_current_weather(lat, lon)
-    except Exception as e:
-        weather = {}
-        st.warning(f"Open-Meteo unavailable: {e}")
-    progress.progress(15, "Fetching forecast…")
-
-    # 2. Forecast
-    try:
-        forecast_raw = get_forecast(lat, lon)
-    except Exception:
-        forecast_raw = {}
-    progress.progress(25, "Fetching NASA POWER climate history…")
-
-    # 3. NASA POWER
-    climate_features = {}
-    climate_df = pd.DataFrame()
-    try:
-        nasa_resp = get_climate_data(lat, lon, str(start_date), str(end_date))
-        climate_df = process_climate_data(nasa_resp)
-        climate_features = generate_climate_features(climate_df)
-    except Exception as e:
-        st.warning(f"NASA POWER data unavailable: {e}")
-    progress.progress(50, "Fetching elevation…")
-
-    # 4. Elevation
-    elevation_m = get_elevation(lat, lon)
-    elev_risk = elevation_to_flood_risk(elevation_m)
-    progress.progress(60, "Calculating cyclone exposure…")
-
-    # 5. Cyclone
-    cyclone_data = calculate_cyclone_exposure(lat, lon)
-    progress.progress(70, "Calculating flood frequency…")
-
-    # 6. Flood
-    flood_freq = calculate_flood_frequency(lat, lon)
-    progress.progress(80, "Loading EM-DAT disaster data…")
-
-    # 7. EM-DAT
-    catastro = calculate_catastrophe_exposure(country_filter or None)
-    progress.progress(90, "Computing risk scores…")
-
-    # ── Risk scores ────────────────────────────────────────────────────────────
-    heavy_rain = climate_features.get("heavy_rain_days", 0)
-    heatwave_days = climate_features.get("heatwave_days", 0)
-    dry_days = climate_features.get("max_consecutive_dry_days", 0)
-
-    flood_score = calculate_flood_risk(heavy_rain, flood_freq, elev_risk)
-    cyclone_score = cyclone_data["cyclone_score"]
-    heat_score = calculate_heat_score(heatwave_days)
-    drought_score = calculate_drought_score(dry_days)
-    overall_score = calculate_climate_risk(flood_score, cyclone_score, heat_score, drought_score)
-
-    progress.progress(100, "Done!")
-    progress.empty()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Section 1 — Current Weather
@@ -184,7 +240,6 @@ w2.metric("💧 Humidity", f"{weather.get('humidity_pct', 'N/A')} %")
 w3.metric("🌧️ Precipitation (today)", f"{weather.get('precipitation_mm', 'N/A')} mm")
 w4.metric("💨 Wind Speed", f"{weather.get('wind_speed_kmh', 'N/A')} km/h")
 
-# 7-day forecast
 if forecast_raw and "daily" in forecast_raw:
     daily = forecast_raw["daily"]
     dates = daily.get("time", [])
@@ -246,7 +301,6 @@ def gauge(value: float, title: str) -> go.Figure:
     fig.update_layout(height=200, margin=dict(t=40, b=10, l=10, r=10))
     return fig
 
-
 g1, g2, g3, g4, g5 = st.columns(5)
 with g1:
     st.plotly_chart(gauge(overall_score, "🌍 Overall Risk"), use_container_width=True)
@@ -264,7 +318,6 @@ with g5:
     st.plotly_chart(gauge(drought_score, "🏜️ Drought Risk"), use_container_width=True)
     st.caption(f"**{risk_label(drought_score)}**")
 
-# Risk breakdown table
 risk_df = pd.DataFrame({
     "Risk Type": ["Flood", "Cyclone", "Heat", "Drought", "Composite Climate Risk"],
     "Score (0–100)": [flood_score, cyclone_score, heat_score, drought_score, overall_score],
@@ -294,9 +347,9 @@ if not climate_df.empty:
                        color_continuous_scale="Blues")
         st.plotly_chart(fig_r, use_container_width=True)
 
-        # Monthly pattern (average across all years)
-        climate_df["month"] = climate_df.index.month
-        monthly_rain = climate_df.groupby("month")["rainfall_mm"].mean().reset_index()
+        monthly_df = climate_df.copy()
+        monthly_df["month"] = monthly_df.index.month
+        monthly_rain = monthly_df.groupby("month")["rainfall_mm"].mean().reset_index()
         monthly_rain["month"] = monthly_rain["month"].apply(
             lambda m: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m-1]
         )
@@ -384,7 +437,6 @@ st.divider()
 # ══════════════════════════════════════════════════════════════════════════════
 st.subheader("🌊 Historical Flood Events (Global Flood Database)")
 
-flood_events = get_flood_events(lat, lon)
 c_f1, c_f2 = st.columns(2)
 c_f1.metric("Flood Events (300 km radius)", len(flood_events))
 c_f2.metric("Flood Frequency Score", f"{flood_freq:.1f} / 100")
@@ -435,10 +487,9 @@ try:
         icon=folium.Icon(color="red" if overall_score >= 75 else "orange" if overall_score >= 50 else "blue"),
     ).add_to(m)
 
-    # Circle showing analysis radius
     folium.Circle(
         [lat, lon],
-        radius=300_000,  # 300 km
+        radius=300_000,
         color="#3b82f6",
         fill=True,
         fill_opacity=0.05,
@@ -447,13 +498,13 @@ try:
 
     folium.Circle(
         [lat, lon],
-        radius=500_000,  # 500 km
+        radius=500_000,
         color="#8b5cf6",
         fill=False,
         tooltip="500 km cyclone exposure radius",
     ).add_to(m)
 
-    st_folium(m, use_container_width=True, height=450)
+    st_folium(m, use_container_width=True, height=450, key="main_map")
 except ImportError:
     st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}))
 
