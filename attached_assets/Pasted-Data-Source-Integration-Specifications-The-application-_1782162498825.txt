@@ -1,0 +1,172 @@
+Data Source Integration Specifications
+The application must implement dedicated API connectors for each climate and catastrophe data source.
+________________________________________
+1. NASA POWER Climate API
+Purpose:
+Historical climate analytics.
+Base Endpoint:
+https://power.larc.nasa.gov/api/temporal/daily/point
+Required Parameters:
+•	latitude
+•	longitude
+•	start
+•	end
+•	community=AG
+•	format=JSON
+Climate Variables:
+PRECTOTCORR = Daily Rainfall (mm/day)
+T2M = Average Temperature (°C)
+T2M_MAX = Maximum Temperature
+T2M_MIN = Minimum Temperature
+RH2M = Relative Humidity (%)
+WS2M = Wind Speed (m/s)
+Example Request:
+https://power.larc.nasa.gov/api/temporal/daily/point?parameters=PRECTOTCORR,T2M,RH2M,WS2M&community=AG&longitude=80.2707&latitude=13.0827&start=20000101&end=20241231&format=JSON
+Create utility:
+utils/nasa_power.py
+Functions:
+get_climate_data(latitude, longitude, start_date, end_date)
+process_climate_data(response)
+generate_climate_features(dataframe)
+Output Features:
+•	Annual Rainfall
+•	Average Temperature
+•	Heavy Rain Days (>100 mm)
+•	Extreme Rain Days (>200 mm)
+•	Heatwave Days (>40°C)
+•	Consecutive Dry Days
+•	Annual Rainfall Trend
+________________________________________
+2. Open-Meteo API
+Purpose:
+Current weather and forecast.
+Endpoint:
+https://api.open-meteo.com/v1/forecast
+Required Variables:
+temperature_2m
+relative_humidity_2m
+precipitation
+wind_speed_10m
+Example:
+https://api.open-meteo.com/v1/forecast?latitude=13.0827&longitude=80.2707&hourly=temperature_2m,precipitation,wind_speed_10m
+Create:
+utils/openmeteo.py
+Functions:
+get_current_weather()
+get_forecast()
+________________________________________
+3. Geocoding Service
+Use OpenStreetMap Nominatim.
+Purpose:
+Convert:
+Country
+State
+District
+City
+to
+Latitude
+Longitude
+Endpoint:
+https://nominatim.openstreetmap.org/search
+Create:
+utils/geocoder.py
+Functions:
+get_coordinates(location)
+reverse_geocode(lat, lon)
+________________________________________
+4. Elevation Data
+Use OpenTopography API.
+Purpose:
+Flood susceptibility.
+Endpoint:
+https://portal.opentopography.org/API/globaldem
+Inputs:
+latitude
+longitude
+Output:
+Elevation (meters)
+Create:
+utils/elevation.py
+Function:
+get_elevation(lat, lon)
+________________________________________
+5. IBTrACS Cyclone Dataset
+Purpose:
+Cyclone exposure analysis.
+Download Source:
+https://www.ncei.noaa.gov/products/international-best-track-archive
+Store locally:
+data/ibtracs.csv
+Features:
+Cyclone Count
+Nearest Cyclone
+Max Wind Speed
+Distance to Cyclone Track
+Functions:
+get_nearby_cyclones()
+calculate_cyclone_exposure()
+________________________________________
+6. Global Flood Database
+Purpose:
+Flood analytics.
+Dataset:
+Global Flood Database
+Store:
+data/flood_events.csv
+Functions:
+get_flood_events()
+calculate_flood_frequency()
+calculate_flood_risk()
+Outputs:
+Flood Count
+Flood Severity
+Flood Exposure Index
+________________________________________
+7. EM-DAT Disaster Database
+Purpose:
+Catastrophe loss analytics.
+Store:
+data/emdat.csv
+Features:
+Economic Loss
+Affected Population
+Disaster Count
+Functions:
+get_disaster_history()
+calculate_catastrophe_exposure()
+________________________________________
+Risk Engine Calculations
+Flood Risk Score
+flood_score =
+0.5 × HeavyRainDays +
+0.3 × FloodFrequency +
+0.2 × ElevationRisk
+Cyclone Risk Score
+cyclone_score =
+0.5 × CycloneCount +
+0.5 × MaxWindExposure
+Heat Risk Score
+heat_score =
+HeatwaveDays × Weight
+Drought Risk Score
+drought_score =
+DryDays × Weight
+Climate Risk Score
+ClimateRisk =
+0.40 × FloodRisk +
+0.25 × CycloneRisk +
+0.15 × HeatRisk +
+0.20 × DroughtRisk
+Normalize all scores to 0-100.
+________________________________________
+Caching
+All API calls must use:
+@st.cache_data(ttl=86400)
+to prevent excessive requests.
+Implement retry handling:
+429 Rate Limit
+500 Server Error
+503 Service Unavailable
+Maximum retries = 3
+Exponential backoff.
+
