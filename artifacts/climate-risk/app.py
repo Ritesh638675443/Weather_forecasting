@@ -22,7 +22,7 @@ from utils.risk_engine import (
 )
 
 st.set_page_config(
-    page_title="Climate Risk Dashboard",
+    page_title="Climate Intelligence Dashboard",
     page_icon="🌍",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -30,7 +30,7 @@ st.set_page_config(
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("🌍 Climate Risk")
+    st.title("🌍 Climate Intelligence")
     st.caption("Powered by NASA POWER · Open-Meteo · OSM Nominatim · IBTrACS")
     st.divider()
 
@@ -64,7 +64,7 @@ with st.sidebar:
 
 # ── Welcome screen ─────────────────────────────────────────────────────────────
 if not analyse:
-    st.title("🌍 Climate & Catastrophe Risk Dashboard")
+    st.title("🌍 Climate Intelligence Dashboard")
     st.markdown(
         """
         Assess **flood, cyclone, heat and drought risk** for any location on Earth,
