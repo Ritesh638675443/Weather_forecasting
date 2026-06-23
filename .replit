@@ -1,6 +1,6 @@
 modules = ["python-3.11"]
 
-run = "bash start.sh"
+run = "streamlit run app.py --server.address 0.0.0.0 --server.port 8501"
 
 [deployment]
 deploymentTarget = "autoscale"
@@ -8,7 +8,3 @@ deploymentTarget = "autoscale"
 [[ports]]
 localPort = 8501
 externalPort = 80
-
-[nix]
-channel = "stable-25_05"
-packages = ["glibcLocales"]
