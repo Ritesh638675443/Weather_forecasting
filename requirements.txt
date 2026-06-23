@@ -1,0 +1,11 @@
+streamlit
+pandas
+numpy
+plotly
+requests
+xarray
+netcdf4
+cdsapi
+folium
+streamlit-folium
+matplotlib
